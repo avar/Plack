@@ -1,6 +1,17 @@
 package Plack::Handler::Apache2;
 use strict;
 use warnings;
+use Apache2::ServerUtil;
+BEGIN {
+    unless (Apache2::ServerUtil::restart_count() > 1) {
+        die <<'UR_DOIN_IT_WRONG';
+You shouldn't be loading Plack::Handler::Apache2 in Apache
+initialization phase #1. It means you're compiling a bunch of Perl in
+an internal pre-pre-fork startup phase that won't get used for
+anything and will just slow your startup down.
+UR_DOIN_IT_WRONG
+    }
+}
 use Apache2::RequestRec;
 use Apache2::RequestIO;
 use Apache2::RequestUtil;
@@ -21,6 +32,12 @@ sub new { bless {}, shift }
 sub preload {
     my $class = shift;
     for my $app (@_) {
+        die <<'UR_DOIN_IT_WRONG' if exists $apps{$app};
+You're trying to preload $app twice!
+
+You likely have two <Perl> sections in your config both trying to
+pre-load, get rid of one of them.
+UR_DOIN_IT_WRONG
         $class->load_app($app);
     }
 }
@@ -95,7 +112,7 @@ sub call_app {
 }
 
 sub handler {
-    my $class = __PACKAGE__;
+    my $class = shift;
     my $r     = shift;
     my $psgi  = $r->dir_config('psgi_app');
     $class->call_app($r, $class->load_app($psgi));
@@ -179,7 +196,7 @@ Plack::Handler::Apache2 - Apache 2.0 handlers to run PSGI application
 
   <Location />
   SetHandler perl-script
-  PerlResponseHandler Plack::Handler::Apache2
+  PerlResponseHandler Plack::Handler::Apache2->handler
   PerlSetVar psgi_app /path/to/app.psgi
   </Location>
 
@@ -188,6 +205,23 @@ Plack::Handler::Apache2 - Apache 2.0 handlers to run PSGI application
   use Plack::Handler::Apache2;
   Plack::Handler::Apache2->preload("/path/to/app.psgi");
   </Perl>
+
+  # Or preload with PerlPostConfigRequire
+  PerlPostConfigRequire /path/to/your/preload-wrapper.pm
+
+  # Which contains:
+  use Apache2::ServerUtil ();
+  BEGIN {
+      unless (Apache2::ServerUtil::restart_count() > 1) {
+          print STDERR "Running in Apache initialization phase #1\n";
+          return;
+      }
+
+      require Plack::Handler::Apache2;
+      Plack::Handler::Apache2->preload("/path/to/app.psgi");
+  }
+
+  1;
 
 =head1 DESCRIPTION
 
